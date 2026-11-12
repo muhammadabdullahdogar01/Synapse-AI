@@ -5,7 +5,7 @@ import streamlit as st
 
 from core.planner import make_plan, is_ai_available
 from core.document_reader import extract_document_text
-from core.scanner import scan_folder
+from core.scanner import scan_folder, folder_signature
 from core.search import search_files
 from core.organizer import propose_moves, apply_moves, DEFAULT_SUBJECTS
 from core.duplicates import find_duplicates
@@ -66,11 +66,10 @@ def check_ai():
     return is_ai_available()
 
 
-@st.cache_data(ttl=60, show_spinner=False)
-def cached_scan(folder):
-    """Scan a folder, reusing the result for 60 seconds."""
+@st.cache_data(show_spinner=False)
+def cached_scan(folder, signature):
+    """Re-scan only when the folder's contents have changed."""
     return scan_folder(folder)
-
 
 ai_online = check_ai()
 
@@ -196,7 +195,7 @@ elif page == "AI Assistant":
         # Step 2: scan the folder
         with st.spinner("Scanning files..."):
             try:
-                files = cached_scan(folder)
+                        files = cached_scan(folder, folder_signature(folder))
             except NotADirectoryError as error:
                 st.error(str(error))
                 st.stop()
@@ -270,7 +269,7 @@ elif page == "AI Assistant":
                     st.markdown(f"**Group {i}** · {len(group)} identical copies · "
                                 f"{group[0].size_kb} KB each")
                     for j, f in enumerate(group):
-                        label = "🟢 keep (oldest)" if j == 0 else "⚪ extra copy"
+                        label = "🟢 keep (original)" if j == 0 else "⚪ extra copy"
                         st.write(f"{label} — **{f.name}**  \n`{f.path.parent}`")
 
             # Propose moving the extra copies aside (never deleting)

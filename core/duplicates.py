@@ -1,5 +1,9 @@
 import hashlib
+import re
 from collections import defaultdict
+
+# Names like "report - Copy", "report (1)", "report_2" look like copies
+COPY_PATTERN = re.compile(r"(\bcopy\b|\(\d+\)$|_\d+$)", re.IGNORECASE)
 
 
 def file_hash(path, chunk_size=1024 * 1024):
@@ -11,8 +15,15 @@ def file_hash(path, chunk_size=1024 * 1024):
     return h.hexdigest()
 
 
+def keep_priority(f):
+    """Lower = better to keep. Prefer names that don't look like copies,
+    then the oldest file, then the shortest name."""
+    looks_like_copy = bool(COPY_PATTERN.search(f.path.stem))
+    return (looks_like_copy, f.modified, len(f.name))
+
+
 def find_duplicates(files):
-    """Return groups of files with identical content (oldest file first)."""
+    """Return groups of files with identical content (the one to keep first)."""
     # Files with different sizes can't be identical, so only hash same-size files
     by_size = defaultdict(list)
     for f in files:
@@ -33,7 +44,7 @@ def find_duplicates(files):
                 continue
         for group in by_hash.values():
             if len(group) > 1:
-                groups.append(sorted(group, key=lambda f: f.modified))
+                groups.append(sorted(group, key=keep_priority))
 
     # Biggest wasted space first
     return sorted(groups, key=lambda g: g[0].size_kb * (len(g) - 1), reverse=True)

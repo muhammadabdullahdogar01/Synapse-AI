@@ -58,3 +58,17 @@ def scan_folder(folder, read_content=True):
                 text=text,
             ))
     return files
+
+def folder_signature(folder):
+    """A quick fingerprint of a folder: changes when any file is added,
+    removed, renamed or edited. Doesn't open the files, so it's fast."""
+    entries = []
+    for root, dirs, filenames in os.walk(folder):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
+        for name in filenames:
+            try:
+                info = os.stat(os.path.join(root, name))
+                entries.append((root, name, info.st_mtime, info.st_size))
+            except OSError:
+                continue
+    return hash(tuple(sorted(entries)))
