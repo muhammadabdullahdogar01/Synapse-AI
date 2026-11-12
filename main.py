@@ -2,9 +2,12 @@ import streamlit as st
 
 from core.planner import make_plan, is_ai_available
 from core.document_reader import extract_document_text
+from core.scanner import scan_folder
+from core.search import search_files
 from core.file_manager import (
     save_uploaded_files,
-    get_saved_documents
+    get_saved_documents,
+    UPLOAD_DIR
 )
 
 st.set_page_config(
@@ -55,6 +58,12 @@ def go_to(page_name):
 def check_ai():
     """Check Ollama at most once every 30 seconds."""
     return is_ai_available()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def cached_scan(folder):
+    """Scan a folder, reusing the result for 60 seconds."""
+    return scan_folder(folder)
 
 
 ai_online = check_ai()
@@ -139,34 +148,71 @@ elif page == "AI Assistant":
     st.title("🤖 AI Assistant")
     st.write("Give SYNAPSE AI an instruction.")
 
+    folder = st.text_input(
+        "Folder to work in",
+        value=str(UPLOAD_DIR),
+        help="Paste any folder path, e.g. C:\\Users\\You\\Documents\\University"
+    )
+
     command = st.text_area(
         "Your instruction",
-        placeholder="Example: Organize my university documents by subject..."
+        placeholder="Example: Find all PDF files related to cybersecurity"
     )
 
     if st.button("Submit Command", type="primary"):
         if not command.strip():
             st.warning("Please enter an instruction.")
-        elif not ai_online:
+            st.stop()
+        if not ai_online:
             st.error("AI engine is offline. Open the Ollama app and refresh this page.")
+            st.stop()
+
+        # Step 1: AI understands the instruction
+        with st.spinner("Understanding your instruction..."):
+            try:
+                plan = make_plan(command)
+            except Exception as error:
+                st.error(f"AI engine error: {error}")
+                st.stop()
+
+        st.success("Instruction understood!")
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Task", plan["intent"].replace("_", " ").title())
+        col2.metric("File types", ", ".join(plan["file_types"]) or "All")
+        col3.metric("Keywords", ", ".join(plan["keywords"]) or "None")
+
+        # Step 2: scan the folder
+        with st.spinner("Scanning files..."):
+            try:
+                files = cached_scan(folder)
+            except NotADirectoryError as error:
+                st.error(str(error))
+                st.stop()
+
+        # Step 3: carry out the task
+        if plan["intent"] == "search":
+            results = search_files(files, plan["file_types"], plan["keywords"])
+
+            st.subheader(f"🔎 {len(results)} matching file(s) out of {len(files)} scanned")
+
+            if not results:
+                st.info("No matching files found. Try different words or another folder.")
+
+            for r in results:
+                with st.container(border=True):
+                    st.markdown(f"**📄 {r.file.name}**")
+                    st.caption(
+                        f"{r.file.size_kb} KB · modified {r.file.modified:%d %b %Y} · "
+                        f"matched: {', '.join(r.matched) or 'file type'}"
+                    )
+                    if r.snippet:
+                        page_note = f" *(page {r.page})*" if r.page else ""
+                        st.write(f"“…{r.snippet}…”{page_note}")
         else:
-            with st.spinner("Understanding your instruction..."):
-                try:
-                    plan = make_plan(command)
-                except Exception as error:
-                    st.error(f"AI engine error: {error}")
-                    st.stop()
-
-            st.session_state["last_plan"] = plan
-            st.success("Instruction understood!")
-
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Task", plan["intent"].replace("_", " ").title())
-            col2.metric("File types", ", ".join(plan["file_types"]) or "All")
-            col3.metric("Keywords", ", ".join(plan["keywords"]) or "None")
-
-            st.info("Next stage: SYNAPSE AI will find matching files "
-                    "and propose actions for your approval.")
+            st.info(
+                f"Scanned {len(files)} files. The "
+                f"'{plan['intent'].replace('_', ' ')}' feature is coming in the next stage."
+            )
 
 
 # ---------- Documents ----------
@@ -196,6 +242,7 @@ elif page == "Documents":
                     st.success(f"{len(saved)} document(s) saved successfully!")
                     for item in saved:
                         st.write("📄", item["name"])
+                    cached_scan.clear()  # new files: forget the old scan
                 else:
                     st.warning("No files were saved. Check file types and sizes.")
 
