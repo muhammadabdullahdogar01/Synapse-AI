@@ -3,10 +3,8 @@ import re
 import shutil
 from pathlib import Path
 
-import ollama
-
-from core import history
-from core.planner import MODEL
+from core import ai, history
+from core.file_manager import unique_destination
 
 DEFAULT_SUBJECTS = [
     "Programming",
@@ -25,7 +23,8 @@ CATEGORY_PROMPT = """You sort university files into subject folders.
 Read the file name and the start of its content, then choose the ONE folder
 from the allowed list that best matches the file's subject.
 - Use "Personal" for CVs, resumes, certificates, ID documents and similar.
-- Use "Uncategorized" if no subject fits, or the content is only sample/placeholder text."""
+- Use "Uncategorized" if no subject fits, or the content is only sample/placeholder text.
+- In "reason", explain your choice in under 12 words (e.g. "Covers SQL joins and normalization")."""
 
 
 def clean_folder_name(name):
@@ -38,11 +37,14 @@ def clean_folder_name(name):
 
 
 def suggest_category(file, choices):
-    """Ask the AI to pick ONE folder from the allowed choices."""
+    """Ask the AI to pick ONE folder from the allowed choices, and say why."""
     schema = {
         "type": "object",
-        "properties": {"category": {"type": "string", "enum": choices}},
-        "required": ["category"],
+        "properties": {
+            "category": {"type": "string", "enum": choices},
+            "reason": {"type": "string"},
+        },
+        "required": ["category", "reason"],
     }
     content = file.text[:600] if file.text else "(no readable text)"
     message = (
@@ -50,18 +52,13 @@ def suggest_category(file, choices):
         f"File name: {file.name}\n"
         f"Content start:\n{content}"
     )
-    response = ollama.chat(
-        model=MODEL,
-        messages=[
-            {"role": "system", "content": CATEGORY_PROMPT},
-            {"role": "user", "content": message},
-        ],
-        format=schema,
-        think=False,
-        options={"temperature": 0},
-    )
-    category = json.loads(response.message.content)["category"]
-    return category if category in choices else "Uncategorized"
+    response = ai.chat([
+        {"role": "system", "content": CATEGORY_PROMPT},
+        {"role": "user", "content": message},
+    ], schema=schema)
+    result = json.loads(response.message.content)
+    category = result["category"] if result["category"] in choices else "Uncategorized"
+    return category, result.get("reason", "").strip()
 
 
 def propose_moves(files, base_folder, subjects, progress=None):
@@ -80,7 +77,7 @@ def propose_moves(files, base_folder, subjects, progress=None):
         if progress:
             progress(i / len(files), f.name)
 
-        category = suggest_category(f, choices)
+        category, reason = suggest_category(f, choices)
 
         if f.path.parent == base / category:
             continue  # already in the right place
@@ -89,21 +86,10 @@ def propose_moves(files, base_folder, subjects, progress=None):
             "move": True,
             "file": f.name,
             "category": category,
+            "reason": reason,
             "source": str(f.path),
         })
     return proposals
-
-
-def unique_destination(destination):
-    """Never overwrite: report.pdf -> report (1).pdf -> report (2).pdf ..."""
-    if not destination.exists():
-        return destination
-    counter = 1
-    while True:
-        candidate = destination.with_name(f"{destination.stem} ({counter}){destination.suffix}")
-        if not candidate.exists():
-            return candidate
-        counter += 1
 
 
 def apply_moves(proposals, base_folder, instruction):
