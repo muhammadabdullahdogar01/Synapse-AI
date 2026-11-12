@@ -11,6 +11,7 @@ class SearchResult:
     matched: list = field(default_factory=list)
     snippet: str = ""
     page: int | None = None
+    relevance: float | None = None  # 0–1 similarity from semantic search
 
 
 def _variants(keyword):
