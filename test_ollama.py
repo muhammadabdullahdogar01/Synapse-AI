@@ -1,4 +1,4 @@
-from synapse.planner import make_plan
+from core.planner import make_plan
 
 tests = [
     ("Find all PDF files related to cybersecurity", "search"),

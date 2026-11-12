@@ -56,3 +56,12 @@ def make_plan(instruction: str) -> dict:
         options={"temperature": 0},
     )
     return json.loads(response.message.content)
+
+
+def is_ai_available() -> bool:
+    """Check whether Ollama is running and reachable."""
+    try:
+        ollama.list()
+        return True
+    except Exception:
+        return False

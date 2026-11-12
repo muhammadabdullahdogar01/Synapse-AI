@@ -1,8 +1,7 @@
-
-
-from core.document_reader import extract_document_text
 import streamlit as st
 
+from core.planner import make_plan, is_ai_available
+from core.document_reader import extract_document_text
 from core.file_manager import (
     save_uploaded_files,
     get_saved_documents
@@ -41,22 +40,45 @@ div[data-testid="stMetric"] {
 </style>
 """, unsafe_allow_html=True)
 
-# Sidebar
+
+# ---------- Helpers ----------
+
+PAGES = ["Dashboard", "AI Assistant", "Documents", "About"]
+
+
+def go_to(page_name):
+    """Switch page (used by Dashboard buttons)."""
+    st.session_state["page"] = page_name
+
+
+@st.cache_data(ttl=30)
+def check_ai():
+    """Check Ollama at most once every 30 seconds."""
+    return is_ai_available()
+
+
+ai_online = check_ai()
+
+
+# ---------- Sidebar ----------
+
 st.sidebar.title("🧠 SYNAPSE AI")
 st.sidebar.caption("Intelligent Desktop Assistant")
 st.sidebar.divider()
 
-page = st.sidebar.radio(
-    "NAVIGATION",
-    ["Dashboard", "AI Assistant", "Documents", "About"]
-)
+page = st.sidebar.radio("NAVIGATION", PAGES, key="page")
 
 st.sidebar.divider()
 st.sidebar.caption("SYSTEM STATUS")
-st.sidebar.info("AI Engine: Not Connected")
+if ai_online:
+    st.sidebar.success("AI Engine: Connected (qwen3:4b)")
+else:
+    st.sidebar.error("AI Engine: Offline — start Ollama")
 st.sidebar.success("Application: Running")
 
-# Dashboard
+
+# ---------- Dashboard ----------
+
 if page == "Dashboard":
 
     st.markdown('<div class="main-title">Welcome to SYNAPSE AI</div>',
@@ -72,10 +94,10 @@ if page == "Dashboard":
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        st.metric("AI Engine", "Offline")
+        st.metric("AI Engine", "Online" if ai_online else "Offline")
 
     with col2:
-        st.metric("Documents", "0")
+        st.metric("Documents", len(get_saved_documents()))
 
     with col3:
         st.metric("System", "Ready")
@@ -90,17 +112,15 @@ if page == "Dashboard":
         with st.container(border=True):
             st.subheader("🤖 AI Assistant")
             st.write("Give instructions using natural language.")
-            if st.button("Open AI Assistant", use_container_width=True):
-                st.session_state["page"] = "AI Assistant"
-                st.rerun()
+            st.button("Open AI Assistant", use_container_width=True,
+                      on_click=go_to, args=("AI Assistant",))
 
     with col2:
         with st.container(border=True):
             st.subheader("📁 Document Manager")
             st.write("Upload and manage your university documents.")
-            if st.button("Open Documents", use_container_width=True):
-                st.session_state["page"] = "Documents"
-                st.rerun()
+            st.button("Open Documents", use_container_width=True,
+                      on_click=go_to, args=("Documents",))
 
     st.divider()
 
@@ -111,7 +131,9 @@ if page == "Dashboard":
     st.write("• Summarize documents using AI")
     st.write("• Identify duplicate files")
 
-# AI Assistant
+
+# ---------- AI Assistant ----------
+
 elif page == "AI Assistant":
 
     st.title("🤖 AI Assistant")
@@ -123,16 +145,32 @@ elif page == "AI Assistant":
     )
 
     if st.button("Submit Command", type="primary"):
-        if command.strip():
-            st.session_state["last_command"] = command
-            st.success("Command received successfully!")
-            st.write("Your instruction:", command)
-            st.info("AI processing will be connected in a later development stage.")
-        else:
+        if not command.strip():
             st.warning("Please enter an instruction.")
+        elif not ai_online:
+            st.error("AI engine is offline. Open the Ollama app and refresh this page.")
+        else:
+            with st.spinner("Understanding your instruction..."):
+                try:
+                    plan = make_plan(command)
+                except Exception as error:
+                    st.error(f"AI engine error: {error}")
+                    st.stop()
+
+            st.session_state["last_plan"] = plan
+            st.success("Instruction understood!")
+
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Task", plan["intent"].replace("_", " ").title())
+            col2.metric("File types", ", ".join(plan["file_types"]) or "All")
+            col3.metric("Keywords", ", ".join(plan["keywords"]) or "None")
+
+            st.info("Next stage: SYNAPSE AI will find matching files "
+                    "and propose actions for your approval.")
 
 
-# Documents
+# ---------- Documents ----------
+
 elif page == "Documents":
 
     st.title("📁 Document Manager")
@@ -155,16 +193,11 @@ elif page == "Documents":
                 saved = save_uploaded_files(files)
 
                 if saved:
-                    st.success(
-                        f"{len(saved)} document(s) saved successfully!"
-                    )
-
+                    st.success(f"{len(saved)} document(s) saved successfully!")
                     for item in saved:
                         st.write("📄", item["name"])
                 else:
-                    st.warning(
-                        "No files were saved. Check file types and sizes."
-                    )
+                    st.warning("No files were saved. Check file types and sizes.")
 
             except Exception as error:
                 st.error(f"Unable to save documents: {error}")
@@ -182,27 +215,19 @@ elif page == "Documents":
 
         for document in documents:
             size_kb = document.stat().st_size / 1024
-
             col1, col2 = st.columns([3, 1])
-
             with col1:
                 st.write(f"📄 {document.name}")
-
             with col2:
                 st.caption(f"{size_kb:.1f} KB")
-
     else:
         st.info("No documents saved yet.")
-
 
     st.divider()
 
     st.subheader("📖 Read Documents")
 
-    documents = get_saved_documents()
-
     if documents:
-
         selected_document = st.selectbox(
             "Select a document",
             documents,
@@ -210,15 +235,11 @@ elif page == "Documents":
         )
 
         if st.button("Extract Document Text"):
-
             try:
-                extracted_text = extract_document_text(
-                    selected_document
-                )
+                extracted_text = extract_document_text(selected_document)
 
                 if extracted_text.strip():
                     st.success("Document read successfully!")
-
                     st.text_area(
                         "Extracted Document Content",
                         value=extracted_text,
@@ -232,12 +253,12 @@ elif page == "Documents":
 
             except Exception as error:
                 st.error(f"Error reading document: {error}")
-
     else:
         st.info("Upload a document first.")
 
 
-# About
+# ---------- About ----------
+
 elif page == "About":
 
     st.title("About SYNAPSE AI")
@@ -257,4 +278,3 @@ elif page == "About":
 
     **Project:** OSSD Semester Project
     """)
-
