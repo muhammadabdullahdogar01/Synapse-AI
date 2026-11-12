@@ -1,9 +1,14 @@
+from pathlib import Path
+
+import pandas as pd
 import streamlit as st
 
 from core.planner import make_plan, is_ai_available
 from core.document_reader import extract_document_text
 from core.scanner import scan_folder
 from core.search import search_files
+from core.organizer import propose_moves, apply_moves
+from core.history import get_operations, get_actions, undo_operation
 from core.file_manager import (
     save_uploaded_files,
     get_saved_documents,
@@ -46,7 +51,7 @@ div[data-testid="stMetric"] {
 
 # ---------- Helpers ----------
 
-PAGES = ["Dashboard", "AI Assistant", "Documents", "About"]
+PAGES = ["Dashboard", "AI Assistant", "Documents", "History", "About"]
 
 
 def go_to(page_name):
@@ -109,7 +114,7 @@ if page == "Dashboard":
         st.metric("Documents", len(get_saved_documents()))
 
     with col3:
-        st.metric("System", "Ready")
+        st.metric("Operations", len(get_operations()))
 
     st.divider()
 
@@ -156,7 +161,7 @@ elif page == "AI Assistant":
 
     command = st.text_area(
         "Your instruction",
-        placeholder="Example: Find all PDF files related to cybersecurity"
+        placeholder="Example: Organize my documents by subject"
     )
 
     if st.button("Submit Command", type="primary"):
@@ -208,11 +213,93 @@ elif page == "AI Assistant":
                     if r.snippet:
                         page_note = f" *(page {r.page})*" if r.page else ""
                         st.write(f"“…{r.snippet}…”{page_note}")
+
+        elif plan["intent"] == "organize":
+            if Path(folder).resolve() == UPLOAD_DIR.resolve():
+                st.warning("The uploads folder is managed by the Documents page. "
+                           "Choose another folder to organize.")
+                st.stop()
+
+            targets = [f for f in files
+                       if not plan["file_types"] or f.extension in plan["file_types"]]
+            if not targets:
+                st.info("No files to organize in this folder.")
+                st.stop()
+
+            bar = st.progress(0.0, text="AI is reading your files...")
+            try:
+                proposals = propose_moves(
+                    targets, folder,
+                    progress=lambda frac, name: bar.progress(frac, text=f"Reading: {name}")
+                )
+            except Exception as error:
+                st.error(f"AI engine error: {error}")
+                st.stop()
+            bar.empty()
+
+            st.session_state["proposal"] = {
+                "id": pd.Timestamp.now().value,
+                "folder": folder,
+                "instruction": command,
+                "rows": proposals,
+            }
+
         else:
             st.info(
                 f"Scanned {len(files)} files. The "
                 f"'{plan['intent'].replace('_', ' ')}' feature is coming in the next stage."
             )
+
+    # ----- Review and approve (stays on screen between clicks) -----
+
+    if "last_result" in st.session_state:
+        op_id, moved, errors = st.session_state.pop("last_result")
+        st.success(f"✅ Moved {moved} file(s). You can undo this on the History page (operation #{op_id}).")
+        for name, error in errors:
+            st.error(f"{name}: {error}")
+
+    proposal = st.session_state.get("proposal")
+    if proposal:
+        st.divider()
+        st.subheader("📋 Proposed changes — review before approving")
+
+        if not proposal["rows"]:
+            st.success("Everything is already organized. Nothing to move.")
+            if st.button("OK"):
+                del st.session_state["proposal"]
+                st.rerun()
+        else:
+            edited = st.data_editor(
+                pd.DataFrame(proposal["rows"]),
+                column_order=["move", "file", "category"],
+                column_config={
+                    "move": st.column_config.CheckboxColumn("Move?"),
+                    "file": st.column_config.TextColumn("File", disabled=True),
+                    "category": st.column_config.TextColumn("New folder (editable)"),
+                },
+                hide_index=True,
+                use_container_width=True,
+                key=f"editor_{proposal['id']}",
+            )
+
+            selected = edited[edited["move"]].to_dict("records")
+            st.caption(
+                f"{len(selected)} of {len(edited)} file(s) will be moved into subfolders of "
+                f"{proposal['folder']}. **Nothing has changed yet.**"
+            )
+
+            col1, col2 = st.columns(2)
+            if col1.button(f"✅ Approve {len(selected)} move(s)", type="primary",
+                           disabled=not selected, use_container_width=True):
+                op_id, done, errors = apply_moves(selected, proposal["folder"], proposal["instruction"])
+                cached_scan.clear()
+                del st.session_state["proposal"]
+                st.session_state["last_result"] = (op_id, len(done), errors)
+                st.rerun()
+
+            if col2.button("❌ Cancel", use_container_width=True):
+                del st.session_state["proposal"]
+                st.rerun()
 
 
 # ---------- Documents ----------
@@ -302,6 +389,43 @@ elif page == "Documents":
                 st.error(f"Error reading document: {error}")
     else:
         st.info("Upload a document first.")
+
+
+# ---------- History ----------
+
+elif page == "History":
+
+    st.title("🕘 Activity History")
+    st.write("Every change SYNAPSE AI makes is recorded here and can be undone.")
+
+    operations = get_operations()
+
+    if not operations:
+        st.info("No changes made yet.")
+
+    for op in operations:
+        with st.container(border=True):
+            col1, col2 = st.columns([5, 1])
+            col1.markdown(f"**#{op['id']} · {op['instruction']}**")
+            col1.caption(
+                f"{op['created_at']} · {op['action_count']} file(s) · "
+                f"status: **{op['status']}**"
+            )
+
+            if op["status"] == "completed" and op["action_count"]:
+                if col2.button("↩️ Undo", key=f"undo_{op['id']}", use_container_width=True):
+                    restored, errors = undo_operation(op["id"])
+                    cached_scan.clear()
+                    st.success(f"Restored {restored} file(s) to their original folders.")
+                    for error in errors:
+                        st.warning(error)
+
+            with st.expander("Show details"):
+                for a in get_actions(op["id"]):
+                    st.write(
+                        f"📄 **{Path(a['source']).name}**  \n"
+                        f"`{Path(a['source']).parent}` → `{Path(a['destination']).parent}`"
+                    )
 
 
 # ---------- About ----------
