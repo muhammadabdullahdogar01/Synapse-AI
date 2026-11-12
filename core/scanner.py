@@ -6,7 +6,7 @@ from pathlib import Path
 from core.document_reader import extract_document_text
 
 # Folders we never look inside
-SKIP_DIRS = {"venv", ".venv", ".git", "__pycache__", "node_modules"}
+SKIP_DIRS = {"venv", ".venv", ".git", "__pycache__", "node_modules", "_duplicates"}
 
 # File types we can read the text of
 READABLE = {".pdf", ".docx"}

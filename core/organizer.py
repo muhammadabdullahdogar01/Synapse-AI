@@ -8,30 +8,45 @@ import ollama
 from core import history
 from core.planner import MODEL
 
-CATEGORY_SCHEMA = {
-    "type": "object",
-    "properties": {"category": {"type": "string"}},
-    "required": ["category"],
-}
+DEFAULT_SUBJECTS = [
+    "Programming",
+    "Databases",
+    "Computer Networks",
+    "Computer Architecture",
+    "Operating Systems",
+    "Cybersecurity",
+    "Artificial Intelligence",
+    "Software Engineering",
+    "Mathematics",
+    "Personal",
+]
 
 CATEGORY_PROMPT = """You sort university files into subject folders.
-Given a file name and the start of its content, reply with ONE short folder name
-(1-3 words, Title Case) for its subject, e.g. "Computer Networks", "Databases",
-"Cybersecurity", "Mathematics", "Personal".
-If one of the existing folders fits, reuse its EXACT name.
-If the subject is unclear, use "Uncategorized"."""
+Read the file name and the start of its content, then choose the ONE folder
+from the allowed list that best matches the file's subject.
+- Use "Personal" for CVs, resumes, certificates, ID documents and similar.
+- Use "Uncategorized" if no subject fits, or the content is only sample/placeholder text."""
 
 
 def clean_folder_name(name):
-    """Remove characters Windows doesn't allow in folder names."""
-    name = re.sub(r'[<>:"/\\|?*]', "", name).strip(" .")
-    return name[:40] or "Uncategorized"
+    """Turn any text into a short, valid Windows folder name."""
+    name = re.split(r"[/\\>|,]", name)[0]
+    name = re.sub(r'[<>:"?*]', "", name)
+    name = re.sub(r"\s+", " ", name).strip(" .-")
+    name = " ".join(name.split()[:3])
+    return name or "Uncategorized"
 
 
-def suggest_category(file, existing):
+def suggest_category(file, choices):
+    """Ask the AI to pick ONE folder from the allowed choices."""
+    schema = {
+        "type": "object",
+        "properties": {"category": {"type": "string", "enum": choices}},
+        "required": ["category"],
+    }
     content = file.text[:600] if file.text else "(no readable text)"
     message = (
-        f"Existing folders: {', '.join(existing) or 'none yet'}\n\n"
+        f"Allowed folders: {', '.join(choices)}\n\n"
         f"File name: {file.name}\n"
         f"Content start:\n{content}"
     )
@@ -41,26 +56,31 @@ def suggest_category(file, existing):
             {"role": "system", "content": CATEGORY_PROMPT},
             {"role": "user", "content": message},
         ],
-        format=CATEGORY_SCHEMA,
+        format=schema,
         think=False,
         options={"temperature": 0},
     )
-    return clean_folder_name(json.loads(response.message.content)["category"])
+    category = json.loads(response.message.content)["category"]
+    return category if category in choices else "Uncategorized"
 
 
-def propose_moves(files, base_folder, progress=None):
+def propose_moves(files, base_folder, subjects, progress=None):
     """Ask the AI for a folder for each file. Moves NOTHING."""
     base = Path(base_folder)
-    existing = sorted(p.name for p in base.iterdir() if p.is_dir())
-    proposals = []
+    existing = [p.name for p in base.iterdir()
+                if p.is_dir() and not p.name.startswith("_")]
 
+    # User's subjects + folders that already exist + a fallback, without repeats
+    choices = list(dict.fromkeys(
+        [clean_folder_name(s) for s in subjects] + existing + ["Uncategorized"]
+    ))
+
+    proposals = []
     for i, f in enumerate(files, start=1):
         if progress:
             progress(i / len(files), f.name)
 
-        category = suggest_category(f, existing)
-        if category not in existing:
-            existing.append(category)  # helps the AI stay consistent
+        category = suggest_category(f, choices)
 
         if f.path.parent == base / category:
             continue  # already in the right place

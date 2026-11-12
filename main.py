@@ -7,7 +7,8 @@ from core.planner import make_plan, is_ai_available
 from core.document_reader import extract_document_text
 from core.scanner import scan_folder
 from core.search import search_files
-from core.organizer import propose_moves, apply_moves
+from core.organizer import propose_moves, apply_moves, DEFAULT_SUBJECTS
+from core.duplicates import find_duplicates
 from core.history import get_operations, get_actions, undo_operation
 from core.file_manager import (
     save_uploaded_files,
@@ -159,6 +160,12 @@ elif page == "AI Assistant":
         help="Paste any folder path, e.g. C:\\Users\\You\\Documents\\University"
     )
 
+    subjects_text = st.text_input(
+        "Your subjects (used when organizing)",
+        value=", ".join(DEFAULT_SUBJECTS),
+        help="Comma-separated. The AI will only sort files into these folders."
+    )
+
     command = st.text_area(
         "Your instruction",
         placeholder="Example: Organize my documents by subject"
@@ -226,10 +233,12 @@ elif page == "AI Assistant":
                 st.info("No files to organize in this folder.")
                 st.stop()
 
+            subjects = [s.strip() for s in subjects_text.split(",") if s.strip()]
+
             bar = st.progress(0.0, text="AI is reading your files...")
             try:
                 proposals = propose_moves(
-                    targets, folder,
+                    targets, folder, subjects,
                     progress=lambda frac, name: bar.progress(frac, text=f"Reading: {name}")
                 )
             except Exception as error:
@@ -242,6 +251,37 @@ elif page == "AI Assistant":
                 "folder": folder,
                 "instruction": command,
                 "rows": proposals,
+            }
+
+        elif plan["intent"] == "find_duplicates":
+            with st.spinner("Comparing file contents..."):
+                groups = find_duplicates(files)
+
+            if not groups:
+                st.success(f"No duplicates found among {len(files)} files. 🎉")
+                st.stop()
+
+            wasted_kb = sum(f.size_kb for g in groups for f in g[1:])
+            st.subheader(f"🗂️ {len(groups)} group(s) of identical files · "
+                         f"{wasted_kb / 1024:.2f} MB could be freed")
+
+            for i, group in enumerate(groups, start=1):
+                with st.container(border=True):
+                    st.markdown(f"**Group {i}** · {len(group)} identical copies · "
+                                f"{group[0].size_kb} KB each")
+                    for j, f in enumerate(group):
+                        label = "🟢 keep (oldest)" if j == 0 else "⚪ extra copy"
+                        st.write(f"{label} — **{f.name}**  \n`{f.path.parent}`")
+
+            # Propose moving the extra copies aside (never deleting)
+            st.session_state["proposal"] = {
+                "id": pd.Timestamp.now().value,
+                "folder": folder,
+                "instruction": command,
+                "rows": [
+                    {"move": True, "file": f.name, "category": "_duplicates", "source": str(f.path)}
+                    for g in groups for f in g[1:]
+                ],
             }
 
         else:
