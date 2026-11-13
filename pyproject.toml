@@ -1,0 +1,11 @@
+[project]
+name = "synapse-ai"
+version = "0.2.0"
+description = "An open-source, local-AI desktop assistant for organizing, searching and understanding documents with plain-English instructions."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["ai: tests that call the real local AI model (need Ollama running)"]

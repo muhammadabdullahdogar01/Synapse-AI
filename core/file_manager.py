@@ -1,13 +1,27 @@
-
-from pathlib import Path
 import re
+from pathlib import Path
+
+from core.document_reader import SUPPORTED_EXTENSIONS
 
 # Project storage directory
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 UPLOAD_DIR = PROJECT_DIR / "workspace" / "uploads"
 
-ALLOWED_EXTENSIONS = {".pdf", ".docx"}
+ALLOWED_EXTENSIONS = SUPPORTED_EXTENSIONS
 MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
+
+
+def unique_destination(destination):
+    """Never overwrite: report.pdf -> report (1).pdf -> report (2).pdf ..."""
+    destination = Path(destination)
+    if not destination.exists():
+        return destination
+    counter = 1
+    while True:
+        candidate = destination.with_name(f"{destination.stem} ({counter}){destination.suffix}")
+        if not candidate.exists():
+            return candidate
+        counter += 1
 
 
 def save_uploaded_files(uploaded_files):

@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 sample_files/
 workspace/
+.pytest_cache/
